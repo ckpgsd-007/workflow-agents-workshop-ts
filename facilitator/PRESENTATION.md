@@ -22,34 +22,31 @@ Hello. I am < Intro yourself >. Today, we're going to build and deploy agents on
 
 **Agent orchestration is a workflow problem first, an AI problem second.**
 
-- 2026: agents are going to production
-- The hard parts: orchestration, observability, durability, retries, isolation, scale
-- The question: how much of this infrastructure do you own?
-
 **Notes**
 
-Agents are shipping to production this year. The hard part is everything around the model call — making a multi-step chain survive a crash, retrying one failed tool call without replaying the whole run, scaling workloads independently. So the question becomes: how much of that infrastructure do you build and maintain yourself? That question is the spine of today: we'll answer it three times, shifting more of the substrate to the platform each pass.
+Agent orchestration is a workflow problem first, and an AI problem second. Through 2026, agents are crossing the line from demo to production, and teams keep discovering the same thing — the model call is the easy part. It's everything *around* the model call that's hard.
+
+Think about what "production" actually demands. A run is no longer a single function call; it's a multi-step chain that has to survive a crash midway through. When one tool call fails, you want to retry just that step, not replay the whole run. You want each step isolated, so a slow reviewer doesn't starve the others. You want the work to scale independently, to be observable when it misbehaves, and to be durable across a deploy. None of that is artificial intelligence. That's orchestration, durability, retries, isolation, observability, and scale — the classic concerns of distributed systems, just wearing an LLM hat.
+
+So the real question is: *how much of that infrastructure do you build and maintain yourself?* We'll answer that question three times today, with the exact same agent each time, shifting more of the substrate onto the platform with every pass. 
 
 ---
 
 ## Slide 3 — One pipeline, three substrates
 
-**The thing we build once, and run three ways**
+**What we're building today**
 
 - A PR goes in. A verdict comes out.
-- `prepareDiff → filterDiff → [ security ‖ performance ‖ ux? ] → judge`
 - Four specialist agents with tools and an LLM loop
-- What changes is *where* and *how* it runs — never the agent
-
-| Pattern | Substrate | Orchestration | Failure mode | Scale |
-| --- | --- | --- | --- | --- |
-| Pattern 1 | Request-bound web service | None | Timeouts, lost work on deploy | No |
-| Pattern 2 | Web service + queue + worker | Queue, acknowledgements, consumer group, retries | Coordination bugs | Yes |
-| Pattern 3 | Render Workflows | Managed | App logic | Yes |
+- What changes is *where* and *how* it runs
 
 **Notes**
 
-We have one code-review pipeline: fetch a PR, filter out noise, fan out specialist reviewers in parallel, then a judge consolidates findings into an approve-or-request-changes verdict. The agents are defined once in a shared package. What changes is the infrastructure that runs them. Hold this table in your head for the entire workshop — the agents are the constant, the substrate is the variable. Pattern 1 has a web service and database, but no separate orchestration layer. Pattern 2 is powerful, but you own the queue and coordination code. Pattern 3 gives you the same power with managed orchestration. We're going to build each one and feel the difference.
+We have one code-review pipeline: fetch a PR, filter out noise, fan out specialist reviewers in parallel, then a judge consolidates findings into an approve-or-request-changes verdict. The agents are defined once in a shared package. What changes is the infrastructure that runs them. 
+
+We will examine three patterns of deployment patterns. 
+
+The naive agent pattern has a web service and database, but no separate orchestration layer. The worker agents pattern is powerful, but you own the queue and coordination code. The workflow agents pattern gives you the same power with managed orchestration. We're going to deploy each one and feel the difference.
 
 ---
 
@@ -62,25 +59,14 @@ We have one code-review pipeline: fetch a PR, filter out noise, fan out speciali
 - Clone your fork locally
 - Run `npm install`
 - Run `npm run setup`
-- Keep the tutorial companion open for the exact steps
 - Deploy Pattern 1 from `packages/naive-agent/render.yaml`
 - Open the Web Service URL and submit the demo PR
 - Click a run to inspect findings and spans
 
-**What you're working with**
-
-- `shared/agent/` — the engine: agents, LLM loop, tools, model client
-- `shared/db/` — telemetry store (Postgres or in-memory)
-- `shared/ui/` — the review viewer (shared by all three)
-- `packages/naive-agent/` — Pattern 1
-- `packages/worker-agents/` — Pattern 2
-- `packages/workflow-agents/` — Pattern 3
-
 **Notes**
 
-This should be a guided code-along, not a deep exercise. The tutorial companion has the exact steps, so the slide should stay at checkpoint level. Start from GitHub so every attendee gets their own fork and generated namespace before they clone locally. Then walk through install, `npm run setup`, and the Pattern 1 deploy. Pattern 1 is worth doing with attendees because it gets them acclimated to the repo, the Render Dashboard, the deployed app, and the review viewer. The goal is a first success moment: everyone has a live agent, everyone has submitted a PR, and everyone has seen a trace. After that, Pattern 1 becomes the baseline we can critique. Pattern 2 is where they feel the coordination pain. Pattern 3 is where they author the platform-native version.
+Quick orientation while you clone: the repo is an npm workspaces monorepo. `shared/` holds the constants every pattern reuses — `shared/agent/` is the engine (agents, LLM loop, tools, model client), `shared/db/` is the telemetry store (Postgres, or in-memory locally), and `shared/ui/` is the review viewer. The three patterns each live under `packages/` — `naive-agent`, `worker-agents`, and `workflow-agents` — and all three import the same agents, tools, and model client. Don't dwell here; just point out that the agent lives in `shared/` and the patterns differ only in how they run it, then move on to the deploy.
 
-This is an npm workspaces monorepo. Every pattern imports the same agents, the same tools, the same model client.
 
 ---
 
@@ -95,15 +81,14 @@ flowchart LR
   review --> db["Postgres"]
 ```
 
-- The agent runs *inside* the HTTP request
-- `POST /api/reviews` → `await runReview(prUrl)` → respond with verdict
-- One import: `runReview` from `@workshop/agent`
-- The viewer shows findings and spans — LLM turns, tool calls, everything
-- It works. Ship it?
 
 **Notes**
+- The agent runs *inside* the HTTP request
+- `POST /api/reviews` → `await runReview(prUrl)` → respond with verdict
+- It works. Ship it?
 
-This is the starting point every agent tutorial gives you. The handler awaits the entire review pipeline — four agents, multiple LLM round-trips, tool calls — and only then responds. Open the viewer, submit a PR, watch it complete. The findings are real. The traces show every LLM turn. It works. So what's the problem?
+
+
 
 ---
 
@@ -208,45 +193,28 @@ flowchart LR
 
 **Notes**
 
-This is the payoff. Same pipeline, same agents, same tools. But now every reviewer runs as its own Render task — isolated, retried, traced. The entire coordination layer from `kv.ts` collapses into a config object: `retry: { maxRetries: 2, waitDurationMs: 1000 }`. You don't write a queue. You don't write message acknowledgements. You don't manage a consumer group. You write a function and a config. Render does the rest.
+Same pipeline, same agents, same tools. But now every reviewer runs as its own Render task — isolated, retried, traced. The entire coordination layer from `kv.ts` collapses into a config object: `retry: { maxRetries: 2, waitDurationMs: 1000 }`. You don't write a queue. You don't write message acknowledgements. You don't manage a consumer group. You write a function and a config. Render does the rest.
 
 ---
 
 ## Slide 11 — The bridge: `agentTask.ts`
 
 ```ts
-task(agent.name, async (input, runId?) => {
-  return agent.run(input, { tracer, runId });
-});
+
+// agentTask.ts — wrap any shared agent as a Render task. This is the whole bridge.
+export function agentTask(agent) {
+  return task(
+    { name: agent.name },                    // + optional timeout, retry, compute size
+    (input, runId) => agent.run(input, { tracer: storeTracer(), runId }),
+  );
+}
+
 ```
 
 - One function wraps any shared agent as a Render task
 - Each call runs in its own container
 - Retries are per-task, not per-pipeline
 - Spans are recorded automatically — every LLM turn, every tool call
-
-**The `task()` API**
-
-**Everything you need to know**
-
-```ts
-export default task(
-  {
-    name: "your-review",
-    timeoutSeconds: 120,
-    retry: { maxRetries: 2, waitDurationMs: 1000, backoffScaling: 2 },
-  },
-  async function yourReview(input) {
-    // your logic — any async function
-  },
-);
-```
-
-| You write | Render gives you |
-| --- | --- |
-| `retry: { maxRetries: 2, … }` | automatic retries with backoff, in a fresh instance |
-| `await someTask(input)` | isolation — each task runs in its own container |
-| nothing | a full trace of every task and sub-task |
 
 **Notes**
 
@@ -299,8 +267,6 @@ The only infrastructure you wrote was a function and a config object. Everything
 - **Evals** — a labeled corpus + a scoring runner. Each case is a task. Fan out over the corpus.
 - **Guardrails** — input sanitization, output validation, tool allow/deny lists. More steps, same pipeline.
 - **Circuit breakers** — per-run budgets, model-tier fallbacks, backpressure caps. Config + a small state check.
-- **Observability** — the tracer interface is the seam. Export spans to OpenTelemetry alongside the built-in viewer.
-- **MCP tools** — `defineMcpSource` makes a tool available to all three patterns at once.
 
 ---
 
@@ -320,4 +286,4 @@ The only infrastructure you wrote was a function and a config object. Everything
 
 **Notes**
 
-Everything is in the repo. The guided docs walk through each pattern. The bonus points in doc 04 have three deeper challenges — a judge reflection loop, wiring in an MCP tool, and a human-in-the-loop gate. Each one reinforces the same lesson. The mock model means you can keep going with zero credentials. Thank you all.
+Everything is in the repo. The guided docs walk through each pattern. The bonus points in doc 04 have three deeper challenges — a judge reflection loop, wiring in an MCP tool, and a human-in-the-loop gate. Each one reinforces the same lesson. The mock model means you can keep goineg with zero credentials. Thank you all.

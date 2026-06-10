@@ -1,4 +1,4 @@
-# 00 — Setup
+# 00 — Setup - TODO - UPDATE WITH LATEST INSTRUCTIONS
 
 This workshop starts on Render. Local development is available for tests,
 debugging, and the worker ack exercise.
