@@ -47,4 +47,5 @@ jobs:
           fi
 
           git commit -m "Namespace Render resources for ${GITHUB_ACTOR}"
+          git pull --rebase origin main
           git push
